@@ -19,7 +19,7 @@ on:
         description: '📦 Split > MB (0=no)'
         required: false
         type: number
-        default: 50
+        default: 40
 
 env:
   PYTHONUNBUFFERED: '1'
@@ -39,16 +39,17 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: 🔄 Install Tools (FFmpeg, Zip) & Update yt-dlp
+      - name: 🔄 Install Tools (FFmpeg, RAR) & Update yt-dlp
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg zip wget
+          # اضافه کردن rar به ابزارهای لینوکس
+          sudo apt-get install -y -qq ffmpeg wget rar
           sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
           echo "✨ yt-dlp version:"
           yt-dlp --version
 
-      - name: 🎯 Universal Download & Split Process
+      - name: 🎯 Universal Download & RAR Split Process
         env:
           URL: ${{ github.event.inputs.url }}
           TYPE: ${{ github.event.inputs.type }}
@@ -61,20 +62,17 @@ jobs:
 
           U = os.environ['URL']
           T = os.environ['TYPE']
-          SP = int(os.environ.get('SPLIT', '50'))
+          SP = int(os.environ.get('SPLIT', '40'))
 
           timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
           short_id = uuid.uuid4().hex[:6]
-          # اسم پایه فایل بدون پسوند
           file_base_name = f"media_{timestamp}_{short_id}"
 
           output_dir = Path('downloads')
           output_dir.mkdir(exist_ok=True)
           
-          # تمپلیت دانلود: اجازه می‌دهیم خود yt-dlp پسوند واقعی سایت را بنشاند
           out_template = str(output_dir / f"{file_base_name}.%(ext)s")
 
-          # آرگومان‌های پیشرفته برای پشتیبانی از تمام سایت‌ها و دور زدن ربات‌کاهش‌ها
           dl_cmd = [
               'yt-dlp',
               '--no-warnings',
@@ -89,7 +87,6 @@ jobs:
           if T == 'audio':
               dl_cmd.extend(['-x', '--audio-format', 'mp3', '--audio-quality', '0'])
           else:
-              # انتخاب بهترین کیفیت موجود در هر سایتی (صدا + تصویر)
               dl_cmd.extend(['-f', 'bv*+ba/b'])
 
           dl_cmd.append(U)
@@ -100,7 +97,6 @@ jobs:
               print("❌ Download failed by yt-dlp.")
               sys.exit(1)
 
-          # پیدا کردن فایل دانلود شده با هر پسوندی که سایت به ما داده (mp4, mkv, webm, mp3 و...)
           downloaded_files = list(output_dir.glob(f"{file_base_name}.*"))
           if not downloaded_files:
               print("❌ Downloaded file not found on disk.")
@@ -110,18 +106,19 @@ jobs:
           size_mb = fp.stat().st_size / 1e6
           print(f"✅ Successfully downloaded: {fp.name} ({size_mb:.2f} MB)")
 
-          # بخش پایداری تکه تکه کردن (بدون فشرده‌سازی مجدد برای جلوگیری از خراب شدن فایل)
+          # بخش پارت‌بندی با فرمت استاندارد RAR
           if SP > 0 and size_mb > SP:
-              print(f"✂️ Splitting {fp.name} into {SP}MB parts...")
-              # سوییچ -0 باعث می‌شود فایل ویدیو دست‌نخورده و بدون فشرده‌سازی زیپ شود (سریع و ایمن)
-              zip_cmd = ['zip', '-0', '-r', '-q', '-s', f'{SP}m', f'{fp.name}.zip', fp.name]
-              zip_res = subprocess.run(zip_cmd, cwd=output_dir)
+              print(f"✂️ Splitting {fp.name} into {SP}MB RAR parts...")
               
-              if zip_res.returncode == 0:
-                  fp.unlink() # حذف فایل اصلی بعد از تکه تکه شدن موفق
-                  print("✅ Secure file split completed.")
+              # a: ساخت آرشیو | -m0: بدون فشرده‌سازی برای سرعت بالا | -v40m: پارت‌های 40 مگابایتی
+              rar_cmd = ['rar', 'a', f'-v{SP}m', '-m0', f'{fp.name}.rar', fp.name]
+              rar_res = subprocess.run(rar_cmd, cwd=output_dir)
+              
+              if rar_res.returncode == 0:
+                  fp.unlink() # حذف فایل اصلی بعد از ساخت موفق پارت‌های RAR
+                  print("✅ Secure RAR split completed.")
               else:
-                  print("⚠️ Warning: Splitting failed, keeping original file.")
+                  print("⚠️ Warning: RAR splitting failed, keeping original file.")
 
           PYEOF
 
@@ -134,7 +131,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "bot@github.com"
           
-          # فقط پوشه دانلودها را ادد کن تا تداخلی پیش نیاید
           git add downloads/*
           
           TOTAL=$(git diff --cached --name-only | wc -l)
@@ -143,9 +139,8 @@ jobs:
             exit 0
           fi
           
-          git commit -m "📦 Media Downloaded [skip ci]" --quiet
+          git commit -m "📦 Media Downloaded as RAR [skip ci]" --quiet
           
-          # سیستم پوش قدرتمند کدی که فرستادی با قابلیت Rebase خودکار
           for i in 1 2 3 4 5; do
             echo -n "   🚀 Attempt $i/5..."
             if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
