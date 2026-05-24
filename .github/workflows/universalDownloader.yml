@@ -1,10 +1,10 @@
-name: 🎯 Universal Video Downloader (Fast Mode)
+name: 🚀 GitHub-Only Universal Downloader
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: '🎬 Video URL (YouTube, Instagram, TikTok, Twitter, Aparat, etc.)'
+        description: '🎬 Video/Page URL'
         required: true
         type: string
       type:
@@ -23,30 +23,28 @@ on:
 
 env:
   PYTHONUNBUFFERED: '1'
-  DEBIAN_FRONTEND: 'noninteractive'
 
 jobs:
-  download-and-process:
-    name: 🚀 Download & Upload
+  download-and-push:
+    name: 📥 Download & Push to Repo
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: write
     
     steps:
-      - uses: actions/checkout@v4
+      - name: ⚡ Checkout Repository
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}
-
-      - name: ⚡ Setup Tools
+      - name: 🔄 Install & Force Update yt-dlp
         run: |
-          command -v yt-dlp &>/dev/null || pip3 install -q yt-dlp
+          sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          echo "✨ yt-dlp updated to version:"
+          yt-dlp --version
           command -v zip &>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq zip)
 
       - name: 🎯 Download & Process
@@ -64,44 +62,47 @@ jobs:
           T = os.environ['TYPE']
           SP = int(os.environ.get('SPLIT', '50'))
 
-          # ساخت نام فایل بر اساس تاریخ، ساعت و یک شناسه کوتاه رندوم
           timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
           short_id = uuid.uuid4().hex[:6]
           file_base_name = f"file_{timestamp}_{short_id}"
 
           output_dir = Path('downloads')
           output_dir.mkdir(exist_ok=True)
-
-          # تنظیم قالب نام‌گذاری خروجی برای yt-dlp
           out_template = str(output_dir / f"{file_base_name}.%(ext)s")
-          dl_cmd = ['yt-dlp','--no-warnings','--no-check-certificate','--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36','--referer', 'https://www.google.com/','--add-header', 'Accept-Language: en-US,en;q=0.9','--add-header', 'Sec-Fetch-Mode: navigate','-o', out_template]
+
+          # دستور دانلود پیشرفته همراه با هدرهای شبیه‌ساز مرورگر و آپدیت برای دور زدن خطاها
+          dl_cmd = [
+              'yt-dlp',
+              '--no-warnings',
+              '--no-check-certificate',
+              '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              '--referer', 'https://www.google.com/',
+              '--add-header', 'Accept-Language: en-US,en;q=0.9',
+              '-o', out_template
+          ]
 
           if T == 'audio':
               dl_cmd.extend(['-x', '--audio-format', 'mp3', '--audio-quality', '0'])
           else:
-              # دانلود بهترین کیفیت ویدیو (ترجیحاً mp4)
               dl_cmd.extend(['-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv+ba/b'])
 
           dl_cmd.append(U)
 
-          # شروع دانلود مستقیم
-          print(f"📥 Downloading from: {U}")
-          dl_res = subprocess.run(dl_cmd)
-          if dl_res.returncode != 0:
-              print("❌ Download failed!")
+          print(f"📥 Downloading directly from: {U}")
+          res = subprocess.run(dl_cmd)
+          if res.returncode != 0:
+              print("❌ Download failed.")
               sys.exit(1)
 
-          # پیدا کردن فایل دانلود شده
           downloaded_files = list(output_dir.glob(f"{file_base_name}.*"))
           if not downloaded_files:
-              print("❌ Downloaded file not found!")
+              print("❌ File not found.")
               sys.exit(1)
 
           fp = downloaded_files[0]
           size_mb = fp.stat().st_size / 1e6
           print(f"✅ Successfully downloaded: {fp.name} ({size_mb:.2f} MB)")
 
-          # اعمال Split در صورت نیاز
           if SP > 0 and size_mb > SP:
               print(f"✂️ Splitting into {SP}MB parts...")
               subprocess.run(['zip', '-r', '-q', '-s', f'{SP}m', f'{fp.name}.zip', fp.name], cwd=output_dir, check=True)
@@ -110,10 +111,10 @@ jobs:
 
           PYEOF
 
-      - name: 📤 Push Files to GitHub
+      - name: 📤 Push Files to GitHub Repo
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📤 PUSHING TO GITHUB"
+          echo "📤 PUSHING TO GITHUB REPOSITORY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           git config user.name "github-actions[bot]"
@@ -127,7 +128,8 @@ jobs:
             exit 0
           fi
           
-          git commit -m "📦 Downloaded via Fast Downloader [skip ci]" --quiet
+          git commit -m "📦 Media Downloaded [skip ci]" --quiet
+          
           for i in 1 2 3 4 5; do
             echo -n "   🚀 Attempt $i/5..."
             if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
