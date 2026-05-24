@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: '🎬 Video/Page URL'
+        description: '🎬 Video/Page URL (Supports 1000+ sites)'
         required: true
         type: string
       type:
@@ -39,22 +39,23 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: 🔄 Install & Force Update yt-dlp
+      - name: 🔄 Install Tools (FFmpeg, Zip) & Update yt-dlp
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg zip wget
           sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
-          echo "✨ yt-dlp updated to version:"
+          echo "✨ yt-dlp version:"
           yt-dlp --version
-          command -v zip &>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq zip)
 
-      - name: 🎯 Download & Process
+      - name: 🎯 Universal Download & Split Process
         env:
           URL: ${{ github.event.inputs.url }}
           TYPE: ${{ github.event.inputs.type }}
           SPLIT: ${{ github.event.inputs.split_threshold_mb }}
         run: |
           python3 << 'PYEOF'
-          import os, sys, subprocess, uuid
+          import os, sys, subprocess, uuid, glob
           from pathlib import Path
           from datetime import datetime
 
@@ -64,13 +65,16 @@ jobs:
 
           timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
           short_id = uuid.uuid4().hex[:6]
-          file_base_name = f"file_{timestamp}_{short_id}"
+          # اسم پایه فایل بدون پسوند
+          file_base_name = f"media_{timestamp}_{short_id}"
 
           output_dir = Path('downloads')
           output_dir.mkdir(exist_ok=True)
+          
+          # تمپلیت دانلود: اجازه می‌دهیم خود yt-dlp پسوند واقعی سایت را بنشاند
           out_template = str(output_dir / f"{file_base_name}.%(ext)s")
 
-          # دستور دانلود فوق پیشرفته برای دور زدن سیستم‌های آنتی‌بات و خطای 410/403
+          # آرگومان‌های پیشرفته برای پشتیبانی از تمام سایت‌ها و دور زدن ربات‌کاهش‌ها
           dl_cmd = [
               'yt-dlp',
               '--no-warnings',
@@ -79,41 +83,45 @@ jobs:
               '--use-extractors', 'generic,default',
               '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
               '--referer', 'https://www.google.com/',
-              '--add-header', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-              '--add-header', 'Accept-Language: en-US,en;q=0.9',
-              '--add-header', 'Sec-Ch-Ua: "Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-              '--add-header', 'Sec-Ch-Ua-Mobile: ?0',
-              '--add-header', 'Sec-Ch-Ua-Platform: "Windows"',
               '-o', out_template
           ]
 
           if T == 'audio':
               dl_cmd.extend(['-x', '--audio-format', 'mp3', '--audio-quality', '0'])
           else:
-              dl_cmd.extend(['-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv+ba/b'])
+              # انتخاب بهترین کیفیت موجود در هر سایتی (صدا + تصویر)
+              dl_cmd.extend(['-f', 'bv*+ba/b'])
 
           dl_cmd.append(U)
 
-          print(f"📥 Downloading directly from: {U}")
+          print(f"📥 Starting universal download for: {U}")
           res = subprocess.run(dl_cmd)
           if res.returncode != 0:
-              print("❌ Download failed.")
+              print("❌ Download failed by yt-dlp.")
               sys.exit(1)
 
+          # پیدا کردن فایل دانلود شده با هر پسوندی که سایت به ما داده (mp4, mkv, webm, mp3 و...)
           downloaded_files = list(output_dir.glob(f"{file_base_name}.*"))
           if not downloaded_files:
-              print("❌ File not found.")
+              print("❌ Downloaded file not found on disk.")
               sys.exit(1)
 
           fp = downloaded_files[0]
           size_mb = fp.stat().st_size / 1e6
           print(f"✅ Successfully downloaded: {fp.name} ({size_mb:.2f} MB)")
 
+          # بخش پایداری تکه تکه کردن (بدون فشرده‌سازی مجدد برای جلوگیری از خراب شدن فایل)
           if SP > 0 and size_mb > SP:
-              print(f"✂️ Splitting into {SP}MB parts...")
-              subprocess.run(['zip', '-r', '-q', '-s', f'{SP}m', f'{fp.name}.zip', fp.name], cwd=output_dir, check=True)
-              fp.unlink()
-              print("✅ File split completed.")
+              print(f"✂️ Splitting {fp.name} into {SP}MB parts...")
+              # سوییچ -0 باعث می‌شود فایل ویدیو دست‌نخورده و بدون فشرده‌سازی زیپ شود (سریع و ایمن)
+              zip_cmd = ['zip', '-0', '-r', '-q', '-s', f'{SP}m', f'{fp.name}.zip', fp.name]
+              zip_res = subprocess.run(zip_cmd, cwd=output_dir)
+              
+              if zip_res.returncode == 0:
+                  fp.unlink() # حذف فایل اصلی بعد از تکه تکه شدن موفق
+                  print("✅ Secure file split completed.")
+              else:
+                  print("⚠️ Warning: Splitting failed, keeping original file.")
 
           PYEOF
 
@@ -126,6 +134,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "bot@github.com"
           
+          # فقط پوشه دانلودها را ادد کن تا تداخلی پیش نیاید
           git add downloads/*
           
           TOTAL=$(git diff --cached --name-only | wc -l)
@@ -136,6 +145,7 @@ jobs:
           
           git commit -m "📦 Media Downloaded [skip ci]" --quiet
           
+          # سیستم پوش قدرتمند کدی که فرستادی با قابلیت Rebase خودکار
           for i in 1 2 3 4 5; do
             echo -n "   🚀 Attempt $i/5..."
             if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
